@@ -17,7 +17,8 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
     "events:dispatch": "tsx scripts/dispatch-events.ts",
-    "bootstrap": "tsx scripts/bootstrap.ts"
+    "bootstrap": "tsx scripts/bootstrap.ts",
+    "users": "tsx scripts/users.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

@@ -310,6 +310,7 @@ returned, so a slow n8n never slows the CRM down.
 | Ship a change | `git push` — Vercel redeploys automatically |
 | Apply a new migration | `DATABASE_URL=... DIRECT_URL=... npx prisma migrate deploy` |
 | Inspect production data | `DATABASE_URL=... npx prisma studio` |
+| List accounts / reset a lost password | `DATABASE_URL=... npm run users` |
 | Add staff | Dashboard → **Staff** |
 | Rotate the API key | Dashboard → **Settings → API keys** (create new, update n8n, revoke old) |
 | Watch stuck events | Dashboard → **Settings**, or `GET /api/events?status=DEAD` |
@@ -339,6 +340,8 @@ always warm.
 | `P1001 can't reach database` | Wrong URL, or Neon asleep | Check `DATABASE_URL`; retry once |
 | `P3005 schema is not empty` | Migration history out of sync | `npx prisma migrate resolve --applied <migration-name>` |
 | Login redirects back to `/login` | `COOKIE_SECURE` not `true` over HTTPS | Set it and redeploy |
+| `500` on login, `/api/health` fine | A bad env var — health now names it | `curl .../api/health`, fix what it lists, redeploy |
+| Forgotten the admin password | Only a bcrypt hash is stored; it cannot be read back | `DATABASE_URL=<neon> npm run users -- --email you@example.com --password 'new'` |
 | `401 UNAUTHORIZED` from n8n | Key wrong or revoked | Check the Header Auth credential is `Bearer <key>` |
 | Events pile up as `PENDING` | No poller, no webhook | Activate workflow 2 |
 | Events go `DEAD` | Endpoint kept failing | Check the URL, fix, then re-queue from Settings |
