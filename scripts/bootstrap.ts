@@ -98,7 +98,20 @@ async function main() {
   const webhookSecret = arg("webhook-secret") ?? process.env.N8N_WEBHOOK_SECRET;
   let webhookNote = "none configured — n8n can poll GET /api/events instead";
 
-  if (webhookUrl && webhookSecret) {
+  const looksLocal = /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])/i.test(webhookUrl ?? "");
+  const targetIsRemote = !/localhost|127\.0\.0\.1/.test(process.env.DATABASE_URL ?? "");
+
+  if (looksLocal && targetIsRemote) {
+    // Classic footgun: running bootstrap from a laptop against a hosted
+    // database picks up the developer's local .env and registers a webhook URL
+    // the deployed app can never reach.
+    console.warn(
+      `\n  ! Skipped the webhook endpoint: "${webhookUrl}" is a localhost URL,\n` +
+        `    but this database is remote — the deployed CRM could not reach it.\n` +
+        `    Pass --webhook-url with a publicly reachable URL, or leave it unset\n` +
+        `    and let n8n poll GET /api/events instead.\n`,
+    );
+  } else if (webhookUrl && webhookSecret) {
     const existing = await prisma.webhookEndpoint.findFirst({
       where: { restaurantId: restaurant.id, url: webhookUrl },
     });
