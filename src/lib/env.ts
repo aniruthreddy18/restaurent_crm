@@ -1,5 +1,6 @@
 import "server-only";
 import { z } from "zod";
+import { ConfigurationError } from "@/server/core/errors";
 
 /**
  * Server-side environment. Parsed once, lazily, so that importing a module in a
@@ -32,8 +33,16 @@ export function env(): Env {
   if (cached) return cached;
   const parsed = schema.safeParse(process.env);
   if (!parsed.success) {
-    const issues = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
-    throw new Error(`Invalid environment configuration — ${issues}`);
+    // Names and reasons only — never the values, which are secrets.
+    const issues = parsed.error.issues.map((i) => ({
+      variable: i.path.join(".") || "(unknown)",
+      problem: i.message,
+    }));
+    const summary = issues.map((i) => `${i.variable} (${i.problem})`).join(", ");
+    throw new ConfigurationError(
+      `Server is misconfigured. Fix these environment variables and redeploy: ${summary}`,
+      issues,
+    );
   }
   cached = parsed.data;
   return cached;

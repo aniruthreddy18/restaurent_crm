@@ -47,6 +47,18 @@ export class RateLimitError extends AppError {
   }
 }
 
+/**
+ * The server is misconfigured — a required environment variable is missing or
+ * malformed. Unlike other 5xx errors, the message is safe to return: it names
+ * the offending VARIABLES, never their values, and without it a first
+ * deployment fails with an opaque 500 and no way to diagnose it.
+ */
+export class ConfigurationError extends AppError {
+  constructor(message: string, details?: unknown) {
+    super(message, 503, "CONFIGURATION_ERROR", details);
+  }
+}
+
 /** Raised when a business invariant (not a shape problem) is violated. */
 export class BusinessRuleError extends AppError {
   constructor(message: string, code = "BUSINESS_RULE_VIOLATION", details?: unknown) {
