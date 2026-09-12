@@ -69,6 +69,48 @@ describe("configuration errors", () => {
     }
   });
 
+  it("treats an empty variable as unset and applies the default", () => {
+    // Regression: hosting dashboards store "not set" as "". Zod defaults only
+    // fire on undefined, so empty boxes used to coerce to 0 and fail — taking
+    // down every authenticated route on a first deployment.
+    const read = envWith({
+      SESSION_TTL_HOURS: "",
+      AUTH_PROVIDER: "",
+      EVENT_MAX_ATTEMPTS: "",
+      EVENT_DISPATCH_BATCH_SIZE: "",
+      RATE_LIMIT_WINDOW_SECONDS: "",
+      RATE_LIMIT_MAX_REQUESTS: "",
+      COOKIE_SECURE: "",
+      DEFAULT_COUNTRY_CODE: "",
+      N8N_WEBHOOK_URL: "",
+      N8N_WEBHOOK_SECRET: "",
+    });
+
+    expect(read).not.toThrow();
+    expect(read()).toMatchObject({
+      SESSION_TTL_HOURS: 12,
+      AUTH_PROVIDER: "local",
+      EVENT_MAX_ATTEMPTS: 8,
+      EVENT_DISPATCH_BATCH_SIZE: 25,
+      RATE_LIMIT_WINDOW_SECONDS: 60,
+      RATE_LIMIT_MAX_REQUESTS: 120,
+      COOKIE_SECURE: false,
+      DEFAULT_COUNTRY_CODE: "91",
+    });
+  });
+
+  it("still rejects the two variables that have no safe default", () => {
+    expect(envWith({ AUTH_SECRET: "" })).toThrow(/AUTH_SECRET/);
+    expect(envWith({ DATABASE_URL: "" })).toThrow(/DATABASE_URL/);
+  });
+
+  it("still honours explicitly set values", () => {
+    expect(envWith({ SESSION_TTL_HOURS: "4", COOKIE_SECURE: "true" })()).toMatchObject({
+      SESSION_TTL_HOURS: 4,
+      COOKIE_SECURE: true,
+    });
+  });
+
   it("never puts a secret value in the message", () => {
     const secret = "this-is-a-real-secret-value-nobody-should-see";
     const read = envWith({ AUTH_SECRET: secret, N8N_WEBHOOK_URL: "nope" });
