@@ -1,0 +1,702 @@
+// Restaurant CRM — permanent business system of record.
+//
+// Design notes:
+//  * Multi-tenant: every business table carries `restaurantId`. All queries are
+//    funnelled through services that require a TenantContext, never raw ids.
+//  * Permanent layer (customers/orders/payments/deliveries/reviews) is strictly
+//    separated from the temporary layer (checkoutSession/conversationSession).
+//  * Money is Decimal(12,2) — never Float.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  // Pooled connection — what the app uses at runtime (PgBouncer on Neon/Supabase).
+  url       = env("DATABASE_URL")
+  // Direct connection — migrations need real session state for advisory locks,
+  // which a transaction pooler cannot provide. Falls back to DATABASE_URL when
+  // unset, so a plain local Postgres needs no extra configuration.
+  directUrl = env("DIRECT_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum UserRole {
+  ADMIN
+  MANAGER
+  KITCHEN
+  CASHIER
+  DELIVERY
+}
+
+enum CustomerType {
+  NEW
+  REGULAR
+  LOYAL
+  VIP
+  INACTIVE
+}
+
+/// Food/fulfilment lifecycle. Deliberately separate from PaymentStatus.
+enum OrderStatus {
+  CONFIRMED
+  PREPARING
+  READY
+  OUT_FOR_DELIVERY
+  DELIVERED
+  CANCELLED
+  FAILED
+}
+
+/// Money lifecycle. Deliberately separate from OrderStatus.
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  REFUNDED
+}
+
+enum CheckoutStatus {
+  ACTIVE
+  CONVERTED
+  ABANDONED
+  EXPIRED
+}
+
+enum DeliveryStatus {
+  PENDING
+  ASSIGNED
+  OUT_FOR_DELIVERY
+  DELIVERED
+  FAILED
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+enum ConversationStatus {
+  OPEN
+  CLOSED
+  EXPIRED
+}
+
+enum EventType {
+  CUSTOMER_CREATED
+  PAYMENT_SUCCESS
+  PAYMENT_FAILED
+  ORDER_CONFIRMED
+  ORDER_PREPARING
+  ORDER_READY
+  ORDER_OUT_FOR_DELIVERY
+  ORDER_DELIVERED
+  ORDER_CANCELLED
+  REVIEW_RECEIVED
+}
+
+/// Outbox row lifecycle. PENDING rows are what n8n polls / the dispatcher pushes.
+/// DELIVERING is a short-lived lease held by a dispatcher that has claimed the
+/// row, so concurrent dispatchers cannot deliver the same event twice.
+enum EventStatus {
+  PENDING
+  DELIVERING
+  DELIVERED
+  FAILED
+  DEAD
+}
+
+enum DeliveryAttemptStatus {
+  PENDING
+  DELIVERED
+  FAILED
+  DEAD
+}
+
+// ---------------------------------------------------------------------------
+// Tenancy & identity
+// ---------------------------------------------------------------------------
+
+model Restaurant {
+  id        String   @id @default(uuid())
+  name      String
+  slug      String   @unique
+  phone     String?
+  email     String?
+  address   String?
+  city      String?
+  currency  String   @default("INR")
+  timezone  String   @default("Asia/Kolkata")
+  /// Tunable business rules (customer tiering thresholds, tax, fees).
+  settings  Json     @default("{}")
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users              User[]
+  customers          Customer[]
+  categories         Category[]
+  products           Product[]
+  checkoutSessions   CheckoutSession[]
+  orders             Order[]
+  orderItems         OrderItem[]
+  payments           Payment[]
+  deliveryDrivers    DeliveryDriver[]
+  deliveries         Delivery[]
+  conversations      ConversationSession[]
+  messages           Message[]
+  reviews            Review[]
+  notifications      Notification[]
+  auditLogs          AuditLog[]
+  events             Event[]
+  apiKeys            ApiKey[]
+  webhookEndpoints   WebhookEndpoint[]
+  idempotencyRecords IdempotencyRecord[]
+
+  @@map("restaurants")
+}
+
+model User {
+  id           String    @id @default(uuid())
+  restaurantId String    @map("restaurant_id")
+  email        String
+  name         String
+  /// Null when authentication is delegated to an external provider (Supabase).
+  passwordHash String?   @map("password_hash")
+  /// External auth subject (e.g. Supabase `auth.users.id`) when delegated.
+  externalId   String?   @map("external_id")
+  role         UserRole
+  phone        String?
+  isActive     Boolean   @default(true) @map("is_active")
+  lastLoginAt  DateTime? @map("last_login_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  restaurant Restaurant      @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  driver     DeliveryDriver?
+  auditLogs  AuditLog[]
+
+  @@unique([restaurantId, email])
+  @@unique([externalId])
+  @@index([restaurantId, role])
+  @@map("users")
+}
+
+model ApiKey {
+  id           String    @id @default(uuid())
+  restaurantId String    @map("restaurant_id")
+  name         String
+  /// SHA-256 of the raw key. The raw key is shown once at creation time.
+  keyHash      String    @unique @map("key_hash")
+  /// Non-secret display prefix, e.g. "rk_live_a1b2".
+  keyPrefix    String    @map("key_prefix")
+  scopes       String[]  @default([])
+  isActive     Boolean   @default(true) @map("is_active")
+  lastUsedAt   DateTime? @map("last_used_at")
+  expiresAt    DateTime? @map("expires_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@index([restaurantId])
+  @@map("api_keys")
+}
+
+// ---------------------------------------------------------------------------
+// Permanent CRM layer
+// ---------------------------------------------------------------------------
+
+/// A Customer only ever exists because a payment reached a terminal result
+/// (SUCCESS or FAILED). Chatting, browsing the menu and abandoned checkouts
+/// never reach this table — see server/modules/customers/customer.service.ts.
+model Customer {
+  id                String       @id @default(uuid())
+  restaurantId      String       @map("restaurant_id")
+  name              String?
+  phone             String?
+  /// E.164-normalised WhatsApp number. Unique per restaurant — the identity key.
+  whatsappNumber    String       @map("whatsapp_number")
+  email             String?
+  address           String?
+  city              String?
+  notes             String?
+  totalOrders       Int          @default(0) @map("total_orders")
+  totalSpent        Decimal      @default(0) @map("total_spent") @db.Decimal(12, 2)
+  averageOrderValue Decimal      @default(0) @map("average_order_value") @db.Decimal(12, 2)
+  firstOrderAt      DateTime?    @map("first_order_at")
+  lastOrderAt       DateTime?    @map("last_order_at")
+  customerType      CustomerType @default(NEW) @map("customer_type")
+  createdAt         DateTime     @default(now()) @map("created_at")
+  updatedAt         DateTime     @updatedAt @map("updated_at")
+
+  restaurant    Restaurant            @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  orders        Order[]
+  payments      Payment[]
+  reviews       Review[]
+  messages      Message[]
+  conversations ConversationSession[]
+
+  @@unique([restaurantId, whatsappNumber])
+  @@index([restaurantId, customerType])
+  @@index([restaurantId, lastOrderAt])
+  @@index([restaurantId, createdAt])
+  @@map("customers")
+}
+
+model Category {
+  id           String   @id @default(uuid())
+  restaurantId String   @map("restaurant_id")
+  name         String
+  description  String?
+  sortOrder    Int      @default(0) @map("sort_order")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  products   Product[]
+
+  @@unique([restaurantId, name])
+  @@index([restaurantId, isActive])
+  @@map("categories")
+}
+
+model Product {
+  id              String   @id @default(uuid())
+  restaurantId    String   @map("restaurant_id")
+  categoryId      String?  @map("category_id")
+  name            String
+  description     String?
+  price           Decimal  @db.Decimal(12, 2)
+  imageUrl        String?  @map("image_url")
+  sku             String?
+  preparationTime Int?     @map("preparation_time")
+  isAvailable     Boolean  @default(true) @map("is_available")
+  /// Identifier of the row in the Google Sheet this product mirrors, when the
+  /// menu is still sourced externally. Nullable: the CRM does not require it.
+  externalRef     String?  @map("external_ref")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  restaurant Restaurant  @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  category   Category?   @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  orderItems OrderItem[]
+
+  @@unique([restaurantId, sku])
+  @@index([restaurantId, categoryId])
+  @@index([restaurantId, isAvailable])
+  @@map("products")
+}
+
+model Order {
+  id                String        @id @default(uuid())
+  restaurantId      String        @map("restaurant_id")
+  orderNumber       String        @map("order_number")
+  /// The caller's own order id (e.g. the reference n8n generates alongside a
+  /// PhonePe payment). Unique per restaurant, so a replayed gateway callback
+  /// resolves to the existing order instead of creating a second one.
+  externalOrderId   String?       @map("external_order_id")
+  customerId        String        @map("customer_id")
+  /// Checkout session this order was converted from, when it came via WhatsApp.
+  checkoutSessionId String?       @unique @map("checkout_session_id")
+  status            OrderStatus   @default(CONFIRMED)
+  paymentStatus     PaymentStatus @default(PENDING) @map("payment_status")
+  subtotal          Decimal       @db.Decimal(12, 2)
+  deliveryFee       Decimal       @default(0) @map("delivery_fee") @db.Decimal(12, 2)
+  discount          Decimal       @default(0) @db.Decimal(12, 2)
+  tax               Decimal       @default(0) @db.Decimal(12, 2)
+  totalAmount       Decimal       @map("total_amount") @db.Decimal(12, 2)
+  deliveryAddress   String?       @map("delivery_address")
+  /// When the customer wants it — scheduled/pre-orders, not when it was placed.
+  /// Null means "as soon as possible".
+  scheduledFor      DateTime?     @map("scheduled_for")
+  /// Reserved for a future GPS/tracking version. Never written in V1.
+  latitude          Float?
+  longitude         Float?
+  notes             String?
+  confirmedAt       DateTime?     @map("confirmed_at")
+  preparingAt       DateTime?     @map("preparing_at")
+  readyAt           DateTime?     @map("ready_at")
+  dispatchedAt      DateTime?     @map("dispatched_at")
+  deliveredAt       DateTime?     @map("delivered_at")
+  cancelledAt       DateTime?     @map("cancelled_at")
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
+
+  restaurant Restaurant       @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  customer   Customer         @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  checkout   CheckoutSession? @relation(fields: [checkoutSessionId], references: [id], onDelete: SetNull)
+  items      OrderItem[]
+  payments   Payment[]
+  delivery   Delivery?
+  review     Review?
+  messages   Message[]
+
+  @@unique([restaurantId, orderNumber])
+  @@unique([restaurantId, externalOrderId])
+  @@index([restaurantId, status])
+  @@index([restaurantId, scheduledFor])
+  @@index([restaurantId, paymentStatus])
+  @@index([restaurantId, createdAt])
+  @@index([customerId])
+  @@map("orders")
+}
+
+/// Order lines keep name/price SNAPSHOTS. Editing the menu later must never
+/// rewrite history, so productId is nullable and purely informational.
+model OrderItem {
+  id                  String   @id @default(uuid())
+  restaurantId        String   @map("restaurant_id")
+  orderId             String   @map("order_id")
+  productId           String?  @map("product_id")
+  productNameSnapshot String   @map("product_name_snapshot")
+  unitPriceSnapshot   Decimal  @map("unit_price_snapshot") @db.Decimal(12, 2)
+  quantity            Int
+  total               Decimal  @db.Decimal(12, 2)
+  /// Structured per-line options — toppings, flavours, add-ons. Kept as a
+  /// snapshot array alongside the name and price so historical orders stay
+  /// exactly as they were sold.
+  modifiers           Json?
+  notes               String?
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  order      Order      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product    Product?   @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+  @@index([restaurantId])
+  @@map("order_items")
+}
+
+model Payment {
+  id            String        @id @default(uuid())
+  restaurantId  String        @map("restaurant_id")
+  customerId    String?       @map("customer_id")
+  orderId       String?       @map("order_id")
+  amount        Decimal       @db.Decimal(12, 2)
+  currency      String        @default("INR")
+  paymentMethod String?       @map("payment_method")
+  gateway       String?
+  /// Gateway transaction id — unique per restaurant, the idempotency anchor.
+  transactionId String        @map("transaction_id")
+  status        PaymentStatus
+  failureReason String?       @map("failure_reason")
+  paidAt        DateTime?     @map("paid_at")
+  /// Non-sensitive gateway echo only. Never card numbers, CVV, PIN or tokens.
+  metadata      Json          @default("{}")
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  customer   Customer?  @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  order      Order?     @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@unique([restaurantId, transactionId])
+  @@index([restaurantId, status])
+  @@index([restaurantId, createdAt])
+  @@index([customerId])
+  @@map("payments")
+}
+
+model DeliveryDriver {
+  id           String   @id @default(uuid())
+  restaurantId String   @map("restaurant_id")
+  /// Optional: a driver may exist without a CRM login (external courier).
+  userId       String?  @unique @map("user_id")
+  name         String
+  phone        String
+  vehicle      String?
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  user       User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+  deliveries Delivery[]
+
+  @@index([restaurantId, isActive])
+  @@map("delivery_drivers")
+}
+
+model Delivery {
+  id              String         @id @default(uuid())
+  restaurantId    String         @map("restaurant_id")
+  orderId         String         @unique @map("order_id")
+  driverId        String?        @map("driver_id")
+  status          DeliveryStatus @default(PENDING)
+  deliveryAddress String?        @map("delivery_address")
+  /// Reserved for a future live-tracking version. Never written in V1.
+  latitude        Float?
+  longitude       Float?
+  assignedAt      DateTime?      @map("assigned_at")
+  dispatchedAt    DateTime?      @map("dispatched_at")
+  deliveredAt     DateTime?      @map("delivered_at")
+  failureReason   String?        @map("failure_reason")
+  notes           String?
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+
+  restaurant Restaurant      @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  order      Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  driver     DeliveryDriver? @relation(fields: [driverId], references: [id], onDelete: SetNull)
+
+  @@index([restaurantId, status])
+  @@index([driverId, status])
+  @@map("deliveries")
+}
+
+model Review {
+  id           String   @id @default(uuid())
+  restaurantId String   @map("restaurant_id")
+  customerId   String   @map("customer_id")
+  /// One review per order. Unique so a replayed n8n call cannot double-insert.
+  orderId      String   @unique @map("order_id")
+  rating       Int
+  comment      String?
+  source       String   @default("WHATSAPP")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  customer   Customer   @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  order      Order      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([restaurantId, rating])
+  @@index([restaurantId, createdAt])
+  @@index([customerId])
+  @@map("reviews")
+}
+
+// ---------------------------------------------------------------------------
+// Temporary layer — must never become CRM data on its own
+// ---------------------------------------------------------------------------
+
+/// A cart held while the AI agent talks to someone on WhatsApp. Disposable:
+/// expired rows may be purged. Converting one to an Order happens ONLY via the
+/// terminal-payment flow.
+model CheckoutSession {
+  id              String         @id @default(uuid())
+  restaurantId    String         @map("restaurant_id")
+  /// n8n's own session identifier. Unique per restaurant for idempotent upserts.
+  sessionId       String         @map("session_id")
+  whatsappNumber  String         @map("whatsapp_number")
+  customerName    String?        @map("customer_name")
+  /// Cart lines as captured by the agent: [{ productId?, name, price, quantity }]
+  items           Json           @default("[]")
+  deliveryAddress String?        @map("delivery_address")
+  subtotal        Decimal        @default(0) @db.Decimal(12, 2)
+  deliveryFee     Decimal        @default(0) @map("delivery_fee") @db.Decimal(12, 2)
+  discount        Decimal        @default(0) @db.Decimal(12, 2)
+  tax             Decimal        @default(0) @db.Decimal(12, 2)
+  totalAmount     Decimal        @default(0) @map("total_amount") @db.Decimal(12, 2)
+  paymentStatus   PaymentStatus  @default(PENDING) @map("payment_status")
+  status          CheckoutStatus @default(ACTIVE)
+  metadata        Json           @default("{}")
+  expiresAt       DateTime       @map("expires_at")
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  order      Order?
+
+  @@unique([restaurantId, sessionId])
+  @@index([restaurantId, status])
+  @@index([restaurantId, whatsappNumber])
+  @@index([expiresAt])
+  @@map("checkout_sessions")
+}
+
+/// Conversation threads. customerId stays nullable forever — most people who
+/// message the restaurant never become customers.
+model ConversationSession {
+  id             String             @id @default(uuid())
+  restaurantId   String             @map("restaurant_id")
+  whatsappNumber String             @map("whatsapp_number")
+  customerId     String?            @map("customer_id")
+  status         ConversationStatus @default(OPEN)
+  lastMessageAt  DateTime?          @map("last_message_at")
+  metadata       Json               @default("{}")
+  createdAt      DateTime           @default(now()) @map("created_at")
+  updatedAt      DateTime           @updatedAt @map("updated_at")
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  customer   Customer?  @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  messages   Message[]
+
+  @@unique([restaurantId, whatsappNumber])
+  @@index([restaurantId, status])
+  @@map("conversation_sessions")
+}
+
+model Message {
+  id                String           @id @default(uuid())
+  restaurantId      String           @map("restaurant_id")
+  conversationId    String?          @map("conversation_id")
+  whatsappNumber    String           @map("whatsapp_number")
+  /// Nullable by design: the sender may never become a CRM customer.
+  customerId        String?          @map("customer_id")
+  orderId           String?          @map("order_id")
+  direction         MessageDirection
+  message           String
+  /// WhatsApp message id — unique per restaurant so replays are no-ops.
+  externalMessageId String?          @map("external_message_id")
+  status            MessageStatus    @default(SENT)
+  createdAt         DateTime         @default(now()) @map("created_at")
+
+  restaurant   Restaurant           @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  conversation ConversationSession? @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  customer     Customer?            @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  order        Order?               @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@unique([restaurantId, externalMessageId])
+  @@index([restaurantId, whatsappNumber, createdAt])
+  @@index([conversationId, createdAt])
+  @@map("messages")
+}
+
+// ---------------------------------------------------------------------------
+// Events / outbox, webhooks, audit, notifications, idempotency
+// ---------------------------------------------------------------------------
+
+/// Transactional outbox. Rows are written inside the same transaction as the
+/// state change, so the CRM never loses an event when n8n is offline.
+model Event {
+  id              String      @id @default(uuid())
+  restaurantId    String      @map("restaurant_id")
+  type            EventType
+  /// Caller-supplied de-duplication key (payment webhook id, etc).
+  externalEventId String?     @map("external_event_id")
+  entityType      String      @map("entity_type")
+  entityId        String      @map("entity_id")
+  payload         Json
+  status          EventStatus @default(PENDING)
+  attempts        Int         @default(0)
+  lastError       String?     @map("last_error")
+  nextAttemptAt   DateTime    @default(now()) @map("next_attempt_at")
+  deliveredAt     DateTime?   @map("delivered_at")
+  createdAt       DateTime    @default(now()) @map("created_at")
+  updatedAt       DateTime    @updatedAt @map("updated_at")
+
+  restaurant Restaurant      @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  deliveries EventDelivery[]
+
+  @@unique([restaurantId, externalEventId])
+  @@index([restaurantId, status, nextAttemptAt])
+  @@index([restaurantId, type, createdAt])
+  @@index([entityType, entityId])
+  @@map("events")
+}
+
+model WebhookEndpoint {
+  id           String      @id @default(uuid())
+  restaurantId String      @map("restaurant_id")
+  name         String
+  url          String
+  /// Shared secret used to sign the HMAC-SHA256 request signature.
+  secret       String
+  /// Empty = subscribe to every event type.
+  eventTypes   EventType[] @default([]) @map("event_types")
+  isActive     Boolean     @default(true) @map("is_active")
+  createdAt    DateTime    @default(now()) @map("created_at")
+  updatedAt    DateTime    @updatedAt @map("updated_at")
+
+  restaurant Restaurant      @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  deliveries EventDelivery[]
+
+  @@index([restaurantId, isActive])
+  @@map("webhook_endpoints")
+}
+
+model EventDelivery {
+  id            String                @id @default(uuid())
+  eventId       String                @map("event_id")
+  endpointId    String                @map("endpoint_id")
+  status        DeliveryAttemptStatus @default(PENDING)
+  attempts      Int                   @default(0)
+  responseCode  Int?                  @map("response_code")
+  lastError     String?               @map("last_error")
+  nextAttemptAt DateTime              @default(now()) @map("next_attempt_at")
+  deliveredAt   DateTime?             @map("delivered_at")
+  createdAt     DateTime              @default(now()) @map("created_at")
+  updatedAt     DateTime              @updatedAt @map("updated_at")
+
+  event    Event           @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  endpoint WebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, endpointId])
+  @@index([status, nextAttemptAt])
+  @@map("event_deliveries")
+}
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  restaurantId String   @map("restaurant_id")
+  /// Null for actions performed by n8n / the API rather than a signed-in user.
+  userId       String?  @map("user_id")
+  actorType    String   @default("USER") @map("actor_type")
+  actorLabel   String?  @map("actor_label")
+  action       String
+  entityType   String   @map("entity_type")
+  entityId     String   @map("entity_id")
+  oldValue     Json?    @map("old_value")
+  newValue     Json?    @map("new_value")
+  ipAddress    String?  @map("ip_address")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  user       User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([restaurantId, createdAt])
+  @@index([entityType, entityId])
+  @@map("audit_logs")
+}
+
+/// In-app notifications for staff. Reserved: the V1 dashboard surfaces state
+/// through the order board and event counters instead, so nothing writes here
+/// yet. Kept so a future notification centre needs no migration.
+model Notification {
+  id           String    @id @default(uuid())
+  restaurantId String    @map("restaurant_id")
+  title        String
+  body         String?
+  level        String    @default("INFO")
+  entityType   String?   @map("entity_type")
+  entityId     String?   @map("entity_id")
+  readAt       DateTime? @map("read_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@index([restaurantId, readAt])
+  @@map("notifications")
+}
+
+/// Generic request-level idempotency. Stores the first response so a replayed
+/// call returns byte-identical output instead of doing the work twice.
+model IdempotencyRecord {
+  id           String   @id @default(uuid())
+  restaurantId String   @map("restaurant_id")
+  scope        String
+  key          String
+  requestHash  String   @map("request_hash")
+  response     Json
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@unique([restaurantId, scope, key])
+  @@index([createdAt])
+  @@map("idempotency_records")
+}
