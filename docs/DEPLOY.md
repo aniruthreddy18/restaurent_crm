@@ -136,68 +136,83 @@ It prints an API key **once** — copy it now, you will need it in step 5.
 4. **Deploy**, then check it:
 
    ```bash
-   curl -s https://<your-app>.vercel.app/api/health
+   curl -s https://restaurent-crm.vercel.app/api/health
    # {"status":"ok","database":"up","time":"..."}
    ```
 
-5. Sign in at `https://<your-app>.vercel.app/login` with the step-3 credentials.
+5. Sign in at `https://restaurent-crm.vercel.app/login` with the step-3 credentials.
 
 `COOKIE_SECURE=true` matters: without it the session cookie is not marked
 Secure, and browsers will drop it over HTTPS.
 
 ---
 
-## Step 5 — Point n8n at the CRM
+## Step 5 — Create the n8n credential
 
-In n8n, **Settings → Variables** (or use plain values if your edition has no
-variables):
+Your n8n is **Community edition**, which has no Variables feature, so the
+workflows below carry the CRM URL inline — there is nothing to configure but
+credentials.
 
-| Variable | Value |
+**Credentials → New → Header Auth**
+
+| Field | Value |
 | --- | --- |
-| `CRM_BASE_URL` | `https://<your-app>.vercel.app/api` |
-| `WA_PHONE_NUMBER_ID` | your WhatsApp Cloud API phone number id |
-| `WA_TOKEN` | your Meta permanent access token |
+| Credential name | `CRM API` |
+| Name | `Authorization` |
+| Value | `Bearer <the API key from step 3>` |
 
-Then **Credentials → New → Header Auth**:
+That one credential is used by every node that talks to the CRM.
 
-- Name: `Authorization`
-- Value: `Bearer <the API key from step 3>`
-
-Call it `CRM API` — the imported workflows expect that credential type.
+If you also want the WhatsApp send node in workflow 2, add a second Header Auth
+credential named `WhatsApp API`, with Name `Authorization` and Value
+`Bearer <your Meta permanent token>`.
 
 ---
 
 ## Step 6 — Import the workflows
 
-Two ready-made workflows are in the `n8n/` folder. In n8n use
-**Workflows → Import from File**.
+Both files are in the `n8n/` folder of the repo. In n8n:
+**Workflows → ⋯ → Import from File**.
 
-### `n8n/1-phonepe-to-crm.json`
+### `n8n/1-phonepe-to-crm.json` — turns a payment into a CRM order
 
-PhonePe callback → maps the payload → `POST /api/orders` → responds to PhonePe.
+`PhonePe callback → map payload → POST /api/orders → respond`
 
 After importing:
-1. Open **POST /api/orders** and select your `CRM API` credential.
+
+1. Open **POST /api/orders** → Credential → select `CRM API`.
 2. Open **Map to CRM payload** and adjust the field mapping to match what your
-   checkout actually stores (the code has comments at each line).
-3. **Activate** it, then copy the production webhook URL and register it with
-   PhonePe as your callback URL.
+   checkout stores. The code is commented line by line; the parts that matter
+   are `phone`, `cookieType`, `quantity` and `merchantOrderId`.
+3. **Save**, then **Activate**.
+4. Copy the node's **Production URL** and register it with PhonePe as the
+   callback URL.
 
-The node sends `Idempotency-Key: <orderId>`, so PhonePe retrying the callback
-cannot produce a second order.
+The node already sends `Idempotency-Key: <orderId>`, so a retried PhonePe
+callback returns the original order instead of creating a second one.
 
-### `n8n/2-crm-events-to-whatsapp.json`
+### `n8n/2-crm-events-to-whatsapp.json` — turns CRM events into messages
 
-Every 30s → `GET /api/events?status=PENDING` → builds the message text →
-sends via WhatsApp Cloud API → `POST /api/events/{id}/ack`.
+`every 30s → GET /api/events → build message → send WhatsApp → ack`
 
 After importing:
-1. Select your `CRM API` credential on both CRM nodes.
-2. Check the message wording in **Build message**.
-3. **Activate**.
 
-Acknowledgement happens only after the send, so a WhatsApp outage leaves the
-event `PENDING` and it goes out on the next pass.
+1. Open **GET pending events** → Credential → `CRM API`.
+2. Open **Acknowledge event** → Credential → `CRM API`.
+3. Open **Send WhatsApp message**:
+   - replace `YOUR_PHONE_NUMBER_ID` in the URL with your WhatsApp Cloud API
+     phone number id, and attach the `WhatsApp API` credential; **or**
+   - delete the node and drop in the WhatsApp send node you already use,
+     reconnecting **Build message → (your node) → Acknowledge event**.
+4. Check the wording in **Build message** — that Code node is where every
+   customer-facing sentence lives.
+5. **Save**, then **Activate**.
+
+Acknowledgement happens only *after* a successful send, so a WhatsApp outage
+leaves the event `PENDING` and it goes out on the next pass rather than being
+silently lost.
+
+---
 
 ### Optional — webhook push for lower latency
 
@@ -205,7 +220,7 @@ Polling every 30 s is robust and needs no public URL. To also get instant
 delivery, add a **Webhook** node in n8n, then register it with the CRM:
 
 ```bash
-export CRM=https://<your-app>.vercel.app/api
+export CRM=https://restaurent-crm.vercel.app/api
 export KEY=<your API key>
 
 # From the CRM UI: Settings → Webhook endpoints.
@@ -238,7 +253,7 @@ there first.
 ## Step 7 — End-to-end check
 
 ```bash
-export CRM=https://<your-app>.vercel.app/api
+export CRM=https://restaurent-crm.vercel.app/api
 export KEY=<your API key>
 
 # 1. Nobody yet

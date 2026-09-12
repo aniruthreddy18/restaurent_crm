@@ -1,28 +1,42 @@
 {
-  "name": "CRM events → WhatsApp",
+  "name": "CRM events \u2192 WhatsApp",
   "nodes": [
     {
       "parameters": {
         "rule": {
-          "interval": [{ "field": "seconds", "secondsInterval": 30 }]
+          "interval": [
+            {
+              "field": "seconds",
+              "secondsInterval": 30
+            }
+          ]
         }
       },
       "id": "b2000000-0000-4000-8000-000000000001",
       "name": "Every 30 seconds",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
-      "position": [-560, 0]
+      "position": [
+        -560,
+        0
+      ]
     },
     {
       "parameters": {
-        "url": "={{ $vars.CRM_BASE_URL }}/events",
+        "url": "https://restaurent-crm.vercel.app/api/events",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendQuery": true,
         "queryParameters": {
           "parameters": [
-            { "name": "status", "value": "PENDING" },
-            { "name": "limit", "value": "25" }
+            {
+              "name": "status",
+              "value": "PENDING"
+            },
+            {
+              "name": "limit",
+              "value": "25"
+            }
           ]
         },
         "options": {}
@@ -31,7 +45,10 @@
       "name": "GET pending events",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [-340, 0]
+      "position": [
+        -340,
+        0
+      ]
     },
     {
       "parameters": {
@@ -42,48 +59,57 @@
       "name": "One item per event",
       "type": "n8n-nodes-base.splitOut",
       "typeVersion": 1,
-      "position": [-120, 0]
+      "position": [
+        -120,
+        0
+      ]
     },
     {
       "parameters": {
-        "jsCode": "// Turn each CRM event into a WhatsApp message.\n// Returning no item for a type means \"nothing to send\" — the event is still\n// acknowledged below so it does not come round again.\n\nconst out = [];\n\nfor (const item of $input.all()) {\n  const e = item.json;\n  const d = e.data ?? {};\n  const to = d.whatsappNumber ?? d.customer?.whatsappNumber;\n  const order = d.orderNumber ?? '';\n  const name = (d.customerName ?? d.customer?.name ?? '').split(' ')[0];\n  const hi = name ? `Hi ${name}, ` : '';\n\n  let text = null;\n\n  switch (e.type) {\n    case 'ORDER_CONFIRMED':\n      text = `${hi}your order ${order} is confirmed. Total ₹${d.totalAmount}. We'll let you know when it's ready!`;\n      break;\n    case 'PAYMENT_FAILED':\n      text = `${hi}your payment for ${order} didn't go through${d.failureReason ? ` (${d.failureReason})` : ''}. Reply RETRY to try again.`;\n      break;\n    case 'ORDER_READY':\n      text = `${hi}your order ${order} is ready.`;\n      break;\n    case 'ORDER_OUT_FOR_DELIVERY':\n      text = `${hi}your order ${order} is on its way.`;\n      break;\n    case 'ORDER_DELIVERED':\n      text = `${hi}your order has been delivered. Thank you for ordering! How would you rate it from 1 to 5?`;\n      break;\n    case 'ORDER_CANCELLED':\n      text = `${hi}your order ${order} has been cancelled.`;\n      break;\n    default:\n      text = null; // CUSTOMER_CREATED, PAYMENT_SUCCESS, REVIEW_RECEIVED — internal only\n  }\n\n  out.push({ json: { eventId: e.id, type: e.type, to, text, send: Boolean(text && to) } });\n}\n\nreturn out;"
+        "jsCode": "// Turn each CRM event into a WhatsApp message.\n// Returning no item for a type means \"nothing to send\" \u2014 the event is still\n// acknowledged below so it does not come round again.\n\nconst out = [];\n\nfor (const item of $input.all()) {\n  const e = item.json;\n  const d = e.data ?? {};\n  const to = d.whatsappNumber ?? d.customer?.whatsappNumber;\n  const order = d.orderNumber ?? '';\n  const name = (d.customerName ?? d.customer?.name ?? '').split(' ')[0];\n  const hi = name ? `Hi ${name}, ` : '';\n\n  let text = null;\n\n  switch (e.type) {\n    case 'ORDER_CONFIRMED':\n      text = `${hi}your order ${order} is confirmed. Total \u20b9${d.totalAmount}. We'll let you know when it's ready!`;\n      break;\n    case 'PAYMENT_FAILED':\n      text = `${hi}your payment for ${order} didn't go through${d.failureReason ? ` (${d.failureReason})` : ''}. Reply RETRY to try again.`;\n      break;\n    case 'ORDER_READY':\n      text = `${hi}your order ${order} is ready.`;\n      break;\n    case 'ORDER_OUT_FOR_DELIVERY':\n      text = `${hi}your order ${order} is on its way.`;\n      break;\n    case 'ORDER_DELIVERED':\n      text = `${hi}your order has been delivered. Thank you for ordering! How would you rate it from 1 to 5?`;\n      break;\n    case 'ORDER_CANCELLED':\n      text = `${hi}your order ${order} has been cancelled.`;\n      break;\n    default:\n      text = null; // CUSTOMER_CREATED, PAYMENT_SUCCESS, REVIEW_RECEIVED \u2014 internal only\n  }\n\n  out.push({ json: { eventId: e.id, type: e.type, to, text, send: Boolean(text && to) } });\n}\n\nreturn out;"
       },
       "id": "b2000000-0000-4000-8000-000000000004",
       "name": "Build message",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [100, 0]
+      "position": [
+        100,
+        0
+      ]
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "=https://graph.facebook.com/v21.0/{{ $vars.WA_PHONE_NUMBER_ID }}/messages",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "Authorization", "value": "=Bearer {{ $vars.WA_TOKEN }}" }
-          ]
-        },
+        "url": "https://graph.facebook.com/v21.0/YOUR_PHONE_NUMBER_ID/messages",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ messaging_product: 'whatsapp', to: $json.to, type: 'text', text: { body: $json.text } }) }}",
         "options": {
-          "response": { "response": { "neverError": true } }
-        }
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
       },
       "id": "b2000000-0000-4000-8000-000000000005",
       "name": "Send WhatsApp message",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [320, 0],
+      "position": [
+        320,
+        0
+      ],
       "alwaysOutputData": true,
       "executeOnce": false,
-      "notes": "Skipped automatically when there is nothing to send (send = false)."
+      "notes": "Replace YOUR_PHONE_NUMBER_ID in the URL. Attach a Header Auth credential: Name=Authorization, Value=Bearer <Meta token>. Or swap this node for your existing WhatsApp send node."
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $vars.CRM_BASE_URL }}/events/{{ $('Build message').item.json.eventId }}/ack",
+        "url": "=https://restaurent-crm.vercel.app/api/events/{{ $('Build message').item.json.eventId }}/ack",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
@@ -95,27 +121,72 @@
       "name": "Acknowledge event",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [540, 0],
+      "position": [
+        540,
+        0
+      ],
       "notes": "Runs only after the message was sent, so a failure leaves the event PENDING for the next pass."
     }
   ],
   "connections": {
     "Every 30 seconds": {
-      "main": [[{ "node": "GET pending events", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "GET pending events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "GET pending events": {
-      "main": [[{ "node": "One item per event", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "One item per event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "One item per event": {
-      "main": [[{ "node": "Build message", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Build message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Build message": {
-      "main": [[{ "node": "Send WhatsApp message", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Send WhatsApp message": {
-      "main": [[{ "node": "Acknowledge event", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Acknowledge event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
-  "settings": { "executionOrder": "v1" },
+  "settings": {
+    "executionOrder": "v1"
+  },
   "pinData": {}
 }

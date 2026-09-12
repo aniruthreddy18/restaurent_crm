@@ -1,5 +1,5 @@
 {
-  "name": "PhonePe → CRM order",
+  "name": "PhonePe \u2192 CRM order",
   "nodes": [
     {
       "parameters": {
@@ -12,23 +12,29 @@
       "name": "PhonePe callback",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [-380, 0],
+      "position": [
+        -380,
+        0
+      ],
       "webhookId": "a1000000-0000-4000-8000-000000000001"
     },
     {
       "parameters": {
-        "jsCode": "// Map the PhonePe callback + your cart context onto the CRM order payload.\n// Adjust the left-hand side to match what your checkout actually stores.\n\nconst body = $json.body ?? $json;\n\n// PhonePe reports state as COMPLETED / FAILED / PENDING.\nconst state = (body.state ?? body.code ?? '').toString().toUpperCase();\nconst paymentStatus =\n  state.includes('SUCCESS') || state.includes('COMPLETED') ? 'SUCCESS'\n  : state.includes('FAIL') || state.includes('ERROR') ? 'FAILED'\n  : 'PENDING';\n\n// merchantOrderId is the reference YOU generated before redirecting to PhonePe.\n// It is the idempotency anchor — the CRM will never create two orders for it.\nconst orderId = body.merchantOrderId ?? body.merchantTransactionId;\n\nif (!orderId) {\n  throw new Error('No merchantOrderId on the callback — cannot make this idempotent');\n}\n\n// Amounts arrive in paise.\nconst totalPrice = Number(body.amount ?? 0) / 100;\n\nreturn [{\n  json: {\n    phone: body.metaInfo?.udf1 ?? body.phone,\n    customerName: body.metaInfo?.udf2 ?? body.customerName ?? undefined,\n    orderId,\n    cookieType: body.metaInfo?.udf3 ?? body.cookieType,\n    quantity: Number(body.metaInfo?.udf4 ?? body.quantity ?? 1),\n    toppings: body.toppings ?? [],\n    deliveryDate: body.deliveryDate ?? undefined,\n    deliveryAddress: body.deliveryAddress ?? undefined,\n    totalPrice,\n    paymentStatus,\n    paymentTransactionId: body.transactionId ?? body.providerReferenceId ?? orderId,\n    paidAt: paymentStatus === 'SUCCESS' ? new Date().toISOString() : undefined,\n    gateway: 'phonepe',\n    paymentMethod: body.paymentInstrument?.type ?? 'UPI'\n  }\n}];"
+        "jsCode": "// Map the PhonePe callback + your cart context onto the CRM order payload.\n// Adjust the left-hand side to match what your checkout actually stores.\n\nconst body = $json.body ?? $json;\n\n// PhonePe reports state as COMPLETED / FAILED / PENDING.\nconst state = (body.state ?? body.code ?? '').toString().toUpperCase();\nconst paymentStatus =\n  state.includes('SUCCESS') || state.includes('COMPLETED') ? 'SUCCESS'\n  : state.includes('FAIL') || state.includes('ERROR') ? 'FAILED'\n  : 'PENDING';\n\n// merchantOrderId is the reference YOU generated before redirecting to PhonePe.\n// It is the idempotency anchor \u2014 the CRM will never create two orders for it.\nconst orderId = body.merchantOrderId ?? body.merchantTransactionId;\n\nif (!orderId) {\n  throw new Error('No merchantOrderId on the callback \u2014 cannot make this idempotent');\n}\n\n// Amounts arrive in paise.\nconst totalPrice = Number(body.amount ?? 0) / 100;\n\nreturn [{\n  json: {\n    phone: body.metaInfo?.udf1 ?? body.phone,\n    customerName: body.metaInfo?.udf2 ?? body.customerName ?? undefined,\n    orderId,\n    cookieType: body.metaInfo?.udf3 ?? body.cookieType,\n    quantity: Number(body.metaInfo?.udf4 ?? body.quantity ?? 1),\n    toppings: body.toppings ?? [],\n    deliveryDate: body.deliveryDate ?? undefined,\n    deliveryAddress: body.deliveryAddress ?? undefined,\n    totalPrice,\n    paymentStatus,\n    paymentTransactionId: body.transactionId ?? body.providerReferenceId ?? orderId,\n    paidAt: paymentStatus === 'SUCCESS' ? new Date().toISOString() : undefined,\n    gateway: 'phonepe',\n    paymentMethod: body.paymentInstrument?.type ?? 'UPI'\n  }\n}];"
       },
       "id": "a1000000-0000-4000-8000-000000000002",
       "name": "Map to CRM payload",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [-160, 0]
+      "position": [
+        -160,
+        0
+      ]
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $vars.CRM_BASE_URL }}/orders",
+        "url": "https://restaurent-crm.vercel.app/api/orders",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendHeaders": true,
@@ -49,7 +55,10 @@
       "name": "POST /api/orders",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [60, 0]
+      "position": [
+        60,
+        0
+      ]
     },
     {
       "parameters": {
@@ -61,20 +70,49 @@
       "name": "Acknowledge PhonePe",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1,
-      "position": [280, 0]
+      "position": [
+        280,
+        0
+      ]
     }
   ],
   "connections": {
     "PhonePe callback": {
-      "main": [[{ "node": "Map to CRM payload", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Map to CRM payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Map to CRM payload": {
-      "main": [[{ "node": "POST /api/orders", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "POST /api/orders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "POST /api/orders": {
-      "main": [[{ "node": "Acknowledge PhonePe", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Acknowledge PhonePe",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
-  "settings": { "executionOrder": "v1" },
+  "settings": {
+    "executionOrder": "v1"
+  },
   "pinData": {}
 }
