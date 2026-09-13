@@ -84,13 +84,7 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ messaging_product: 'whatsapp', to: $json.to, type: 'text', text: { body: $json.text } }) }}",
-        "options": {
-          "response": {
-            "response": {
-              "neverError": true
-            }
-          }
-        },
+        "options": {},
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth"
       },
@@ -99,17 +93,17 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        320,
-        0
+        540,
+        -110
       ],
-      "alwaysOutputData": true,
       "executeOnce": false,
-      "notes": "Replace YOUR_PHONE_NUMBER_ID in the URL. Attach a Header Auth credential: Name=Authorization, Value=Bearer <Meta token>. Or swap this node for your existing WhatsApp send node."
+      "notes": "Replace YOUR_PHONE_NUMBER_ID and attach a Header Auth credential (Authorization: Bearer <Meta token>), or swap in your own WhatsApp node. A failure here must stop the branch so the event is retried.",
+      "onError": "stopWorkflow"
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "=https://restaurent-crm.vercel.app/api/events/{{ $('Build message').item.json.eventId }}/ack",
+        "url": "=https://restaurent-crm.vercel.app/api/events/{{ $('Needs a message?').item.json.eventId }}/ack",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
@@ -122,10 +116,44 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        540,
+        760,
         0
       ],
-      "notes": "Runs only after the message was sent, so a failure leaves the event PENDING for the next pass."
+      "notes": "Reached only after a successful send (top branch) or for events that need no message (bottom branch). A failed send never reaches here, so the CRM keeps the event PENDING and hands it out again."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "send-check",
+              "leftValue": "={{ $json.send }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000007",
+      "name": "Needs a message?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        320,
+        0
+      ],
+      "notes": "True -> send then acknowledge. False -> acknowledge only."
     }
   ],
   "connections": {
@@ -166,7 +194,7 @@
       "main": [
         [
           {
-            "node": "Send WhatsApp message",
+            "node": "Needs a message?",
             "type": "main",
             "index": 0
           }
@@ -175,6 +203,24 @@
     },
     "Send WhatsApp message": {
       "main": [
+        [
+          {
+            "node": "Acknowledge event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs a message?": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp message",
+            "type": "main",
+            "index": 0
+          }
+        ],
         [
           {
             "node": "Acknowledge event",

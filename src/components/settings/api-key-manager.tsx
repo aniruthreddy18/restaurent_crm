@@ -24,6 +24,7 @@ export function ApiKeyManager({ keys, canManage }: { keys: Key[]; canManage: boo
   const [busy, setBusy] = useState(false);
   const [newKey, setNewKey] = useState<string | null>(null);
   const [revoking, setRevoking] = useState<Key | null>(null);
+  const [deleting, setDeleting] = useState<Key | null>(null);
 
   async function create(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -39,6 +40,21 @@ export function ApiKeyManager({ keys, canManage }: { keys: Key[]; canManage: boo
       router.refresh();
     } catch (error) {
       push(error instanceof ApiError ? error.message : "Could not create the key.", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove() {
+    if (!deleting) return;
+    setBusy(true);
+    try {
+      await apiFetch(`/api/settings/api-keys/${deleting.id}?mode=permanent`, { method: "DELETE" });
+      push(`"${deleting.name}" deleted.`);
+      setDeleting(null);
+      router.refresh();
+    } catch (error) {
+      push(error instanceof ApiError ? error.message : "Could not delete the key.", "error");
     } finally {
       setBusy(false);
     }
@@ -81,6 +97,15 @@ export function ApiKeyManager({ keys, canManage }: { keys: Key[]; canManage: boo
                 {canManage && key.isActive ? (
                   <button type="button" onClick={() => setRevoking(key)} className={buttonClass("ghost", "sm")}>
                     Revoke
+                  </button>
+                ) : null}
+                {canManage && !key.isActive ? (
+                  <button
+                    type="button"
+                    onClick={() => setDeleting(key)}
+                    className={buttonClass("ghost", "sm", "text-danger")}
+                  >
+                    Delete
                   </button>
                 ) : null}
               </div>
@@ -128,6 +153,17 @@ export function ApiKeyManager({ keys, canManage }: { keys: Key[]; canManage: boo
           </button>
         </div>
       </Modal>
+
+      <ConfirmDialog
+        open={Boolean(deleting)}
+        title={`Delete "${deleting?.name}" permanently?`}
+        description="The key is already revoked, so nothing is using it. This removes it from the list for good — the audit log keeps a record that it existed."
+        confirmLabel="Delete key"
+        destructive
+        busy={busy}
+        onConfirm={remove}
+        onCancel={() => setDeleting(null)}
+      />
 
       <ConfirmDialog
         open={Boolean(revoking)}

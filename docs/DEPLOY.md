@@ -208,9 +208,15 @@ After importing:
    customer-facing sentence lives.
 5. **Save**, then **Activate**.
 
-Acknowledgement happens only *after* a successful send, so a WhatsApp outage
-leaves the event `PENDING` and it goes out on the next pass rather than being
-silently lost.
+The **Needs a message?** node routes each event: ones that produce a message go
+through WhatsApp first, and internal events (`CUSTOMER_CREATED`,
+`PAYMENT_SUCCESS`, `REVIEW_RECEIVED`) are acknowledged directly so they do not
+sit pending forever.
+
+Acknowledgement happens only *after* a successful send. Do not set "Never Error"
+on the send node — that makes a failed send look successful, and the message is
+dropped without trace while the CRM records it as delivered. Do not set "Never Error" on the send node — that makes a failed
+send look successful and the message is dropped without trace.
 
 ---
 

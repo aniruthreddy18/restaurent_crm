@@ -2,6 +2,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/db/prisma";
 import type { TenantContext } from "@/server/core/context";
 import { assertCan } from "@/server/auth/permissions";
+import { BusinessRuleError, NotFoundError } from "@/server/core/errors";
 import { generateApiKey } from "@/server/auth/api-key";
 import { recordAudit } from "@/server/audit/audit";
 import { DEFAULT_TIER_CONFIG, tierConfigFromSettings } from "@/server/modules/customers/customer.rules";
@@ -103,6 +104,36 @@ export async function revokeApiKey(ctx: TenantContext, keyId: string) {
       newValue: { isActive: false },
     });
     return updated;
+  });
+}
+
+/**
+ * Permanently removes a revoked key. Only revoked keys can be deleted — an
+ * active key must be revoked first, so nobody can silently cut off a running
+ * integration with one click. The audit row survives the deletion.
+ */
+export async function deleteApiKey(ctx: TenantContext, keyId: string) {
+  assertCan(ctx, "settings:write");
+
+  const key = await prisma.apiKey.findFirst({ where: { id: keyId, restaurantId: ctx.restaurantId } });
+  if (!key) throw new NotFoundError("API key");
+
+  if (key.isActive) {
+    throw new BusinessRuleError(
+      "Revoke this key before deleting it — deleting an active key would break whatever is using it without warning",
+      "API_KEY_STILL_ACTIVE",
+    );
+  }
+
+  return prisma.$transaction(async (tx) => {
+    await tx.apiKey.delete({ where: { id: key.id } });
+    await recordAudit(tx, ctx, {
+      action: "api_key.deleted",
+      entityType: "api_key",
+      entityId: key.id,
+      oldValue: { name: key.name, keyPrefix: key.keyPrefix, revokedWhileActive: false },
+    });
+    return { id: key.id, name: key.name };
   });
 }
 

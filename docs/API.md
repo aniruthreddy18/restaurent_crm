@@ -454,6 +454,11 @@ active admin cannot be demoted or deactivated (`400 LAST_ADMIN`).
 `GET|POST /api/settings/api-keys` · `DELETE /api/settings/api-keys/:id` —
 **session auth only**, so a leaked API key cannot mint another.
 
+`DELETE` revokes by default. Add `?mode=permanent` to remove the row entirely —
+allowed only on an already-revoked key, so deleting one cannot silently cut off
+a running integration. Returns `400 API_KEY_STILL_ACTIVE` otherwise. The audit
+log keeps a record either way.
+
 ---
 
 ## Outgoing webhooks (CRM → n8n)
