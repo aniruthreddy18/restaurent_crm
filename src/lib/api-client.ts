@@ -17,6 +17,8 @@ export class ApiError extends Error {
     message: string,
     readonly status: number,
     readonly code: string,
+    /** Field-level problems from a 422, so a form can point at the right input. */
+    readonly details?: unknown,
   ) {
     super(message);
   }
@@ -42,6 +44,7 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
       error?.message ?? `Request failed (${response.status})`,
       response.status,
       error?.code ?? "UNKNOWN",
+      error?.details,
     );
   }
 

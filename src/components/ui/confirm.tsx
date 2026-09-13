@@ -48,7 +48,7 @@ export function ConfirmDialog({
       aria-labelledby="confirm-title"
       onClick={onCancel}
     >
-      <div className="card w-full max-w-md p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+      <div className="card w-full max-w-md p-5 text-left shadow-xl" onClick={(e) => e.stopPropagation()}>
         <h2 id="confirm-title" className="text-sm font-semibold text-ink">
           {title}
         </h2>
@@ -101,7 +101,7 @@ export function Modal({
       aria-modal="true"
       onClick={onClose}
     >
-      <div className="card w-full max-w-lg p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+      <div className="card w-full max-w-lg p-5 text-left shadow-xl" onClick={(e) => e.stopPropagation()}>
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-ink">{title}</h2>
           <button

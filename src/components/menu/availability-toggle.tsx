@@ -22,6 +22,15 @@ export function AvailabilityToggle({
   const { push } = useToast();
   const [busy, setBusy] = useState(false);
   const [optimistic, setOptimistic] = useState(available);
+  const [syncedProp, setSyncedProp] = useState(available);
+
+  // Re-sync when the server sends a new value — e.g. after the product was
+  // retired from the edit dialog. Without this the switch keeps showing its
+  // own stale optimistic value and silently lies about availability.
+  if (available !== syncedProp) {
+    setSyncedProp(available);
+    setOptimistic(available);
+  }
 
   async function toggle() {
     const next = !optimistic;
